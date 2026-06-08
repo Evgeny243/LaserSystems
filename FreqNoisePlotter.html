@@ -6,7 +6,7 @@
 <title>Frequency Noise Plotter</title>
 
 <!-- ── External libraries (loaded from CDN) ───────────────────────────── -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/msal.js/2.38.3/msal-browser.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.32.0/plotly.min.js"></script>
 <link  href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
 
@@ -420,20 +420,30 @@ var currentAccount = null;
 var filesMeta      = [];
 var traces         = [];
 
-// ── MSAL — initialise immediately at top level, no DOMContentLoaded ───────
-var msalInstance = new msal.PublicClientApplication({
-  auth: {
-    clientId:    CONFIG.clientId,
-    authority:   "https://login.microsoftonline.com/" + CONFIG.tenantId,
-    redirectUri: window.location.href.split('?')[0],
-  },
-  cache: { cacheLocation: "sessionStorage" },
+// ── MSAL — constructed on window load so CDN script is guaranteed ready ──
+var msalInstance = null;
+
+window.addEventListener('load', function() {
+  try {
+    msalInstance = new msal.PublicClientApplication({
+      auth: {
+        clientId:    CONFIG.clientId,
+        authority:   "https://login.microsoftonline.com/" + CONFIG.tenantId,
+        redirectUri: window.location.href.split('?')[0],
+      },
+      cache: { cacheLocation: "sessionStorage" },
+    });
+    msalInstance.handleRedirectPromise().catch(function(){});
+    setStatus('Ready — sign in to load files');
+  } catch(e) {
+    setStatus('MSAL init failed: ' + e.message);
+  }
 });
-msalInstance.handleRedirectPromise().catch(function(){});
 
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 async function handleSignIn() {
+  if (!msalInstance) { showToast('App still initializing — please wait a moment and try again.', true); return; }
   try {
     const resp = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
     currentAccount = resp.account;
