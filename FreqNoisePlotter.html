@@ -360,7 +360,7 @@ const CONFIG = {
 <header>
   <div class="logo">freq<span>noise</span>.plotter</div>
   <div id="status-bar">Not signed in</div>
-  <button id="btn-signin" onclick="handleSignIn()">Sign in with Microsoft</button>
+  <button id="btn-signin">Sign in with Microsoft</button>
 </header>
 
 <!-- Workspace -->
@@ -420,17 +420,27 @@ const msalConfig = {
   auth: {
     clientId:   CONFIG.clientId,
     authority:  `https://login.microsoftonline.com/${CONFIG.tenantId}`,
-    redirectUri: window.location.href.split('?')[0],  // current page, no query string
+    redirectUri: window.location.href.split('?')[0],
   },
   cache: { cacheLocation: "sessionStorage" },
 };
-const msalInstance = new msal.PublicClientApplication(msalConfig);
+
+// Declare at module scope so all functions can access
+let msalInstance;
+let currentAccount  = null;
+let filesMeta       = [];
+let traces          = [];
+
+// Initialise after DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  msalInstance = new msal.PublicClientApplication(msalConfig);
+  msalInstance.handleRedirectPromise().catch(() => {});
+  // Wire up button clicks here so msalInstance is guaranteed to exist
+  document.getElementById('btn-signin').addEventListener('click', handleSignIn);
+});
+
 const GRAPH_SCOPES  = ["Files.Read.All", "Sites.Read.All"];
 const GRAPH_BASE    = "https://graph.microsoft.com/v1.0";
-
-let currentAccount  = null;
-let filesMeta       = [];   // [{name, downloadUrl, size, modified}]
-let traces          = [];   // Plotly trace objects currently on chart
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 async function handleSignIn() {
@@ -772,8 +782,7 @@ function showToast(msg, isError = false) {
   toastTimer = setTimeout(() => t.className = '', 4000);
 }
 
-// Handle redirect after login (needed when popup is blocked)
-msalInstance.handleRedirectPromise().catch(() => {});
+
 </script>
 </body>
 </html>
