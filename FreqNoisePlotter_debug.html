@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Frequency Noise Plotter</title>
+
+<!-- ── External libraries (loaded from CDN) ───────────────────────────── -->
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.32.0/plotly.min.js"></script>
+<link  href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
+
+<style>
+/* ── Design tokens ──────────────────────────────────────────────────────── */
+:root {
+  --bg:          #0d1117;
+  --bg2:         #161b22;
+  --bg3:         #1c2230;
+  --border:      #2a3445;
+  --accent:      #4493f8;
+  --accent2:     #3fb950;
+  --accent-warn: #d29922;
+  --text:        #e6edf3;
+  --text-dim:    #7d8590;
+  --text-dimmer: #484f58;
+  --font-ui:     'Syne', sans-serif;
+  --font-mono:   'JetBrains Mono', monospace;
+  --radius:      6px;
+  --sidebar-w:   300px;
+
+  /* Fixed plot axis limits — never change */
+  --plot-x-min: 1;
+  --plot-x-max: 100000000;
+  --plot-y-min: 0.1;
+  --plot-y-max: 100000000000;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Top bar ────────────────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  height: 52px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+  gap: 12px;
+}
+.logo {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  white-space: nowrap;
+}
+.logo span { color: var(--accent); }
+
+#status-bar {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#btn-signin {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 6px 16px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+  white-space: nowrap;
+}
+#btn-signin:hover { opacity: 0.85; }
+#btn-signin:disabled { opacity: 0.4; cursor: default; }
+#btn-signin.signed-in {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+/* ── Main layout ────────────────────────────────────────────────────────── */
+.workspace {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+aside {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.sidebar-header h2 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.icon-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius);
+  width: 26px; height: 26px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  transition: border-color .15s, color .15s;
+}
+.icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.folder-input-row {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.folder-input-row input {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 4px 8px;
+  outline: none;
+  min-width: 0;
+}
+.folder-input-row input:focus { border-color: var(--accent); }
+.folder-input-row input::placeholder { color: var(--text-dimmer); }
+
+.sel-actions {
+  padding: 6px 14px;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.sel-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.sel-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+#file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+#file-list::-webkit-scrollbar { width: 4px; }
+#file-list::-webkit-scrollbar-track { background: transparent; }
+#file-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.file-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background .1s, border-color .1s;
+}
+.file-item:hover { background: var(--bg3); }
+.file-item.checked { border-left-color: var(--accent); background: rgba(68,147,248,0.06); }
+
+.file-item input[type=checkbox] {
+  margin-top: 2px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.file-name {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text);
+  line-height: 1.4;
+  word-break: break-all;
+}
+.file-meta {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dimmer);
+  margin-top: 1px;
+}
+
+.empty-state {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--text-dimmer);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* ── Plot area ──────────────────────────────────────────────────────────── */
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.plot-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+
+.plot-btn {
+  border: none;
+  border-radius: var(--radius);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 18px;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.plot-btn:hover { opacity: 0.85; }
+.plot-btn:disabled { opacity: 0.35; cursor: default; }
+.plot-btn.primary   { background: var(--accent);  color: #fff; }
+.plot-btn.secondary { background: var(--accent2); color: #0d1117; }
+
+.toolbar-sep {
+  width: 1px; height: 20px;
+  background: var(--border);
+}
+
+.toolbar-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+#plot-title-input {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 4px 10px;
+  width: 240px;
+  outline: none;
+}
+#plot-title-input:focus { border-color: var(--accent); }
+
+#plot-div {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Loading spinner ────────────────────────────────────────────────────── */
+.spinner {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Toast ──────────────────────────────────────────────────────────────── */
+#toast {
+  position: fixed;
+  bottom: 24px; right: 24px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+  z-index: 9999;
+  max-width: 360px;
+}
+#toast.show { opacity: 1; }
+#toast.error { border-color: #f85149; color: #f85149; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  CONFIGURATION — fill these in before uploading to SharePoint          -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+const CONFIG = {
+  // Azure AD App Registration values
+  clientId:   "6d33bfdc-3b78-4d28-a460-ca8cac920723",        // Application (client) ID
+  tenantId:   "ce9b7b50-4043-45e5-9841-b0386610857a",        // Directory (tenant) ID
+
+  // SharePoint site URL — e.g. "https://contoso.sharepoint.com/sites/QuantumLab"
+  siteUrl:    "https://queracomputing.sharepoint.com/sites/QuEraComputing/Shared Documents",
+
+  // Default folder path (server-relative) — user can override in the UI
+  // e.g. "/sites/QuantumLab/Shared Documents/ExperimentData"
+  folderPath: "sites/QuEraComputing/Shared Documents/Hardware documentation/Laser Referencing and Locking/PhaseNoise_library",
+};
+</script>
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<!-- Header -->
+<header>
+  <div class="logo">freq<span>noise</span>.plotter</div>
+  <div id="status-bar">Not signed in</div>
+  <button id="btn-signin" onclick="handleSignIn()">Sign in with Microsoft</button>
+</header>
+
+<!-- Workspace -->
+<div class="workspace">
+
+  <!-- Sidebar -->
+  <aside>
+    <div class="sidebar-header">
+      <h2>Data Files</h2>
+      <button class="icon-btn" title="Refresh file list" onclick="loadFileList()">↻</button>
+    </div>
+
+    <div class="folder-input-row">
+      <input id="folder-path-input" type="text" placeholder="SharePoint folder path…"/>
+      <button class="icon-btn" title="Load folder" onclick="loadFileList()">→</button>
+    </div>
+
+    <div class="sel-actions">
+      <button class="sel-btn" onclick="selectAll()">Select all</button>
+      <button class="sel-btn" onclick="clearAll()">Clear</button>
+    </div>
+
+    <div id="file-list">
+      <div class="empty-state">Sign in and load a folder<br>to see data files.</div>
+    </div>
+  </aside>
+
+  <!-- Plot panel -->
+  <main>
+    <div class="plot-toolbar">
+      <button class="plot-btn primary" id="btn-plot" onclick="plotSelected()" disabled>
+        Plot selected
+      </button>
+      <button class="plot-btn secondary" id="btn-download" onclick="downloadPNG()" disabled>
+        ⬇ PNG
+      </button>
+      <div class="toolbar-sep"></div>
+      <span class="toolbar-label">Title:</span>
+      <input id="plot-title-input" type="text" placeholder="Frequency Noise"/>
+    </div>
+    <div id="plot-div"></div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<!-- ── Main application script ─────────────────────────────────────────── -->
+<script>
+// ── Fixed axis limits — hardcoded, never change ───────────────────────────
+var X_MIN = 1,      X_MAX = 1e8;
+var Y_MIN = 1e-1,   Y_MAX = 1e11;
+
+var GRAPH_SCOPES = ["Files.Read.All", "Sites.Read.All"];
+var GRAPH_BASE   = "https://graph.microsoft.com/v1.0";
+
+var currentAccount = null;
+var filesMeta      = [];
+var traces         = [];
+
+// ── MSAL — constructed on window load so CDN script is guaranteed ready ──
+var msalInstance = null;
+
+window.addEventListener('load', function() {
+  try {
+    console.log('window loaded');
+    console.log('msal object:', typeof msal);
+    console.log('msal.PublicClientApplication:', typeof msal?.PublicClientApplication);
+    msalInstance = new msal.PublicClientApplication({
+      auth: {
+        clientId:    CONFIG.clientId,
+        authority:   "https://login.microsoftonline.com/" + CONFIG.tenantId,
+        redirectUri: window.location.href.split('?')[0],
+      },
+      cache: { cacheLocation: "sessionStorage" },
+    });
+    msalInstance.handleRedirectPromise().catch(function(){});
+    setStatus('Ready — sign in to load files');
+  } catch(e) {
+    setStatus('MSAL init failed: ' + e.message);
+  }
+});
+
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+async function handleSignIn() {
+  if (!msalInstance) { showToast('App still initializing — please wait a moment and try again.', true); return; }
+  try {
+    const resp = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
+    currentAccount = resp.account;
+    setStatus(`Signed in as ${currentAccount.username}`);
+    document.getElementById('btn-signin').textContent = `Sign out (${currentAccount.username.split('@')[0]})`;
+    document.getElementById('btn-signin').classList.add('signed-in');
+    document.getElementById('btn-signin').onclick = handleSignOut;
+    document.getElementById('folder-path-input').value = CONFIG.folderPath;
+    loadFileList();
+  } catch(e) {
+    if (!e.message?.includes('user_cancelled')) showToast('Sign-in failed: ' + e.message, true);
+  }
+}
+
+function handleSignOut() {
+  msalInstance.logoutPopup({ account: currentAccount });
+  currentAccount = null;
+  document.getElementById('btn-signin').textContent = 'Sign in with Microsoft';
+  document.getElementById('btn-signin').classList.remove('signed-in');
+  document.getElementById('btn-signin').onclick = handleSignIn;
+  document.getElementById('file-list').innerHTML =
+    '<div class="empty-state">Sign in and load a folder<br>to see data files.</div>';
+  setStatus('Not signed in');
+}
+
+async function getToken() {
+  const req = { scopes: GRAPH_SCOPES, account: currentAccount };
+  try {
+    const r = await msalInstance.acquireTokenSilent(req);
+    return r.accessToken;
+  } catch {
+    const r = await msalInstance.acquireTokenPopup(req);
+    return r.accessToken;
+  }
+}
+
+async function graphGet(url) {
+  const token = await getToken();
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`Graph API ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// ── SharePoint file listing ───────────────────────────────────────────────
+async function loadFileList() {
+  if (!currentAccount) { showToast('Please sign in first.', true); return; }
+
+  const folderPath = document.getElementById('folder-path-input').value.trim() || CONFIG.folderPath;
+  setStatus('<span class="spinner"></span>Loading file list…');
+  document.getElementById('file-list').innerHTML =
+    '<div class="empty-state"><span class="spinner"></span>Fetching files…</div>';
+
+  try {
+    // Resolve site ID
+    const hostname  = new URL(CONFIG.siteUrl).hostname;
+    const sitePath  = new URL(CONFIG.siteUrl).pathname.replace(/^\//, '');
+    const siteData  = await graphGet(`${GRAPH_BASE}/sites/${hostname}:/${sitePath}`);
+    const siteId    = siteData.id;
+
+    // Get default document library drive
+    const drivesData = await graphGet(`${GRAPH_BASE}/sites/${siteId}/drives`);
+    const drive      = drivesData.value.find(d => d.driveType === 'documentLibrary') || drivesData.value[0];
+    const driveId    = drive.id;
+
+    // List children of target folder
+    const encoded  = encodeURIComponent(folderPath);
+    const listUrl  = folderPath && folderPath !== '/'
+      ? `${GRAPH_BASE}/drives/${driveId}/root:${folderPath}:/children`
+      : `${GRAPH_BASE}/drives/${driveId}/root/children`;
+
+    const listData = await graphGet(listUrl);
+
+    filesMeta = listData.value
+      .filter(item => item.file)      // files only, skip subfolders
+      .map(item => ({
+        name:        item.name,
+        downloadUrl: item['@microsoft.graph.downloadUrl'],
+        size:        item.size,
+        modified:    item.lastModifiedDateTime?.slice(0, 10) ?? '',
+      }));
+
+    renderFileList();
+    setStatus(`${filesMeta.length} file(s) in folder`);
+  } catch(e) {
+    setStatus('Error loading files');
+    showToast('Failed to load file list: ' + e.message, true);
+    document.getElementById('file-list').innerHTML =
+      `<div class="empty-state" style="color:#f85149">Error: ${e.message}</div>`;
+  }
+}
+
+function renderFileList() {
+  const el = document.getElementById('file-list');
+  if (!filesMeta.length) {
+    el.innerHTML = '<div class="empty-state">No files found in this folder.</div>';
+    return;
+  }
+  el.innerHTML = filesMeta.map((f, i) => `
+    <div class="file-item" id="fi-${i}" onclick="toggleFile(${i})">
+      <input type="checkbox" id="cb-${i}" onchange="onCheck(${i})" onclick="event.stopPropagation()"/>
+      <div>
+        <div class="file-name">${f.name}</div>
+        <div class="file-meta">${formatBytes(f.size)} · ${f.modified}</div>
+      </div>
+    </div>`).join('');
+}
+
+function toggleFile(i) {
+  const cb = document.getElementById(`cb-${i}`);
+  cb.checked = !cb.checked;
+  onCheck(i);
+}
+function onCheck(i) {
+  document.getElementById(`fi-${i}`).classList.toggle('checked',
+    document.getElementById(`cb-${i}`).checked);
+  updatePlotBtn();
+}
+function selectAll() {
+  filesMeta.forEach((_, i) => {
+    document.getElementById(`cb-${i}`).checked = true;
+    document.getElementById(`fi-${i}`).classList.add('checked');
+  });
+  updatePlotBtn();
+}
+function clearAll() {
+  filesMeta.forEach((_, i) => {
+    document.getElementById(`cb-${i}`).checked = false;
+    document.getElementById(`fi-${i}`).classList.remove('checked');
+  });
+  updatePlotBtn();
+}
+function updatePlotBtn() {
+  const any = filesMeta.some((_, i) => document.getElementById(`cb-${i}`)?.checked);
+  document.getElementById('btn-plot').disabled = !any;
+}
+
+// ── File parsing ──────────────────────────────────────────────────────────
+function parseFile(text, filename) {
+  // Split into non-empty lines
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+
+  // Find the header line: first line whose first token is not a pure number
+  // and that has ≥ 2 tab-separated fields
+  let dataStart = 0;
+  let colFreq   = 0;
+  let colFN     = 3;   // default: col 4 (0-indexed = 3) = Hz²/Hz
+
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    const parts = lines[i].split('\t');
+    if (parts.length >= 4 && isNaN(parseFloat(parts[0]))) {
+      // This looks like a header row — map column names
+      const headers = parts.map(h => h.trim().toLowerCase());
+      const fIdx = headers.findIndex(h => h.includes('frequency') && !h.includes('noise'));
+      const nIdx = headers.findIndex(h => h.includes('hz^2') || h.includes('hz²') || h.includes('hz2/hz'));
+      if (fIdx >= 0) colFreq = fIdx;
+      if (nIdx >= 0) colFN   = nIdx;
+      dataStart = i + 1;
+      break;
+    }
+    // If line parses as numbers it IS a data line — no header found yet
+    if (parts.length >= 4 && !isNaN(parseFloat(parts[0]))) {
+      dataStart = i;
+      break;
+    }
+  }
+
+  const xVals = [], yVals = [];
+  for (let i = dataStart; i < lines.length; i++) {
+    const parts = lines[i].split('\t');
+    if (parts.length <= Math.max(colFreq, colFN)) continue;
+    const x = parseFloat(parts[colFreq]);
+    const y = parseFloat(parts[colFN]);
+    if (isFinite(x) && isFinite(y) && x > 0 && y > 0) {
+      xVals.push(x);
+      yVals.push(y);
+    }
+  }
+  if (!xVals.length) throw new Error(`No valid X/Y data found in ${filename}`);
+  return { x: xVals, y: yVals };
+}
+
+// ── Plotting ──────────────────────────────────────────────────────────────
+const COLORS = [
+  '#4493f8','#f78166','#3fb950','#d2a8ff',
+  '#ffa657','#79c0ff','#ff7b72','#56d364',
+];
+
+async function plotSelected() {
+  const selected = filesMeta
+    .map((f, i) => ({ ...f, i }))
+    .filter(f => document.getElementById(`cb-${f.i}`)?.checked);
+
+  if (!selected.length) return;
+
+  const btn = document.getElementById('btn-plot');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Loading…';
+  setStatus(`<span class="spinner"></span>Fetching ${selected.length} file(s)…`);
+
+  traces = [];
+  const errors = [];
+
+  await Promise.all(selected.map(async (f, idx) => {
+    try {
+      const resp = await fetch(f.downloadUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      const { x, y } = parseFile(text, f.name);
+      traces[idx] = {
+        x, y,
+        type: 'scatter',
+        mode: 'lines',
+        name: f.name,
+        line: { color: COLORS[idx % COLORS.length], width: 1.2 },
+        hovertemplate: '<b>%{fullData.name}</b><br>f = %{x:.3g} Hz<br>S = %{y:.3g} Hz²/Hz<extra></extra>',
+      };
+    } catch(e) {
+      errors.push(`${f.name}: ${e.message}`);
+    }
+  }));
+
+  traces = traces.filter(Boolean);
+
+  if (!traces.length) {
+    showToast('No data could be loaded. ' + errors.join(' | '), true);
+    btn.disabled = false;
+    btn.textContent = 'Plot selected';
+    setStatus('Error — no data plotted');
+    return;
+  }
+
+  const title = document.getElementById('plot-title-input').value.trim() || 'Frequency Noise';
+  const showLegend = traces.length > 1;
+
+  const layout = {
+    paper_bgcolor: '#0d1117',
+    plot_bgcolor:  '#0d1117',
+    font:  { family: "'JetBrains Mono', monospace", color: '#e6edf3', size: 11 },
+    title: {
+      text: title,
+      font: { family: "'Syne', sans-serif", size: 15, color: '#e6edf3' },
+      x: 0.5, xanchor: 'center',
+      pad: { t: 6 },
+    },
+    xaxis: {
+      title: { text: 'Frequency offset (Hz)', standoff: 8 },
+      type:  'log',
+      range: [Math.log10(X_MIN), Math.log10(X_MAX)],  // log10 values for Plotly log axis
+      tickvals: [1, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8],
+      ticktext: ['1 Hz','10','100','1 kHz','10 k','100 k','1 MHz','10 M','100 M'],
+      showgrid: true, gridcolor: '#2a3445', gridwidth: 0.8,
+      minor: { showgrid: true, gridcolor: '#1e2733', gridwidth: 0.4, ticks: 'inside' },
+      ticks: 'inside', tickcolor: '#7d8590',
+      linecolor: '#484f58', mirror: true,
+      zeroline: false,
+    },
+    yaxis: {
+      title: { text: 'Frequency Noise (Hz²/Hz)', standoff: 8 },
+      type:  'log',
+      range: [Math.log10(Y_MIN), Math.log10(Y_MAX)],
+      tickvals: [1e-1,1e0,1e1,1e2,1e3,1e4,1e5,1e6,1e7,1e8,1e9,1e10,1e11],
+      ticktext: ['10⁻¹','10⁰','10¹','10²','10³','10⁴','10⁵','10⁶','10⁷','10⁸','10⁹','10¹⁰','10¹¹'],
+      showgrid: true, gridcolor: '#2a3445', gridwidth: 0.8,
+      minor: { showgrid: true, gridcolor: '#1e2733', gridwidth: 0.4, ticks: 'inside' },
+      ticks: 'inside', tickcolor: '#7d8590',
+      linecolor: '#484f58', mirror: true,
+      zeroline: false,
+    },
+    legend: showLegend ? {
+      bgcolor: 'rgba(22,27,34,0.85)',
+      bordercolor: '#2a3445',
+      borderwidth: 1,
+      font: { size: 10 },
+      x: 1, xanchor: 'right',
+      y: 1, yanchor: 'top',
+    } : { visible: false },
+    showlegend: showLegend,
+    margin: { l: 72, r: 24, t: 52, b: 60 },
+    hovermode: 'x unified',
+    hoverlabel: {
+      bgcolor: '#161b22',
+      bordercolor: '#2a3445',
+      font: { family: "'JetBrains Mono', monospace", size: 11 },
+    },
+  };
+
+  const config = {
+    responsive: true,
+    displayModeBar: true,
+    modeBarButtonsToRemove: ['select2d','lasso2d'],
+    displaylogo: false,
+    toImageButtonOptions: { format: 'png', width: 1400, height: 800, scale: 2 },
+  };
+
+  Plotly.react('plot-div', traces, layout, config);
+
+  document.getElementById('btn-download').disabled = false;
+  btn.disabled = false;
+  btn.textContent = 'Plot selected';
+
+  const msg = `Plotted ${traces.length} trace(s)` + (errors.length ? ` · ${errors.length} error(s)` : '');
+  setStatus(msg);
+  if (errors.length) showToast('Some files failed: ' + errors.join(' | '), true);
+}
+
+// ── PNG download ──────────────────────────────────────────────────────────
+async function downloadPNG() {
+  if (!traces.length) return;
+  const title    = document.getElementById('plot-title-input').value.trim() || 'frequency_noise';
+  const filename = title.replace(/\s+/g, '_') + '.png';
+  try {
+    await Plotly.downloadImage('plot-div', {
+      format: 'png', width: 1400, height: 800, scale: 2, filename,
+    });
+  } catch(e) {
+    showToast('Download failed: ' + e.message, true);
+  }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────
+function setStatus(html) {
+  document.getElementById('status-bar').innerHTML = html;
+}
+function formatBytes(b) {
+  if (!b) return '—';
+  if (b < 1024)       return b + ' B';
+  if (b < 1048576)    return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+let toastTimer;
+function showToast(msg, isError = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className   = 'show' + (isError ? ' error' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = '', 4000);
+}
+
+
+</script>
+</body>
+</html>
