@@ -360,7 +360,7 @@ const CONFIG = {
 <header>
   <div class="logo">freq<span>noise</span>.plotter</div>
   <div id="status-bar">Not signed in</div>
-  <button id="btn-signin">Sign in with Microsoft</button>
+  <button id="btn-signin" onclick="handleSignIn()">Sign in with Microsoft</button>
 </header>
 
 <!-- Workspace -->
@@ -409,38 +409,28 @@ const CONFIG = {
 
 <!-- ── Main application script ─────────────────────────────────────────── -->
 <script>
-"use strict";
-
 // ── Fixed axis limits — hardcoded, never change ───────────────────────────
-const X_MIN = 1,      X_MAX = 1e8;
-const Y_MIN = 1e-1,   Y_MAX = 1e11;
+var X_MIN = 1,      X_MAX = 1e8;
+var Y_MIN = 1e-1,   Y_MAX = 1e11;
 
-// ── MSAL setup ────────────────────────────────────────────────────────────
-const msalConfig = {
+var GRAPH_SCOPES = ["Files.Read.All", "Sites.Read.All"];
+var GRAPH_BASE   = "https://graph.microsoft.com/v1.0";
+
+var currentAccount = null;
+var filesMeta      = [];
+var traces         = [];
+
+// ── MSAL — initialise immediately at top level, no DOMContentLoaded ───────
+var msalInstance = new msal.PublicClientApplication({
   auth: {
-    clientId:   CONFIG.clientId,
-    authority:  `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    clientId:    CONFIG.clientId,
+    authority:   "https://login.microsoftonline.com/" + CONFIG.tenantId,
     redirectUri: window.location.href.split('?')[0],
   },
   cache: { cacheLocation: "sessionStorage" },
-};
-
-// Declare at module scope so all functions can access
-let msalInstance;
-let currentAccount  = null;
-let filesMeta       = [];
-let traces          = [];
-
-// Initialise after DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  msalInstance = new msal.PublicClientApplication(msalConfig);
-  msalInstance.handleRedirectPromise().catch(() => {});
-  // Wire up button clicks here so msalInstance is guaranteed to exist
-  document.getElementById('btn-signin').addEventListener('click', handleSignIn);
 });
+msalInstance.handleRedirectPromise().catch(function(){});
 
-const GRAPH_SCOPES  = ["Files.Read.All", "Sites.Read.All"];
-const GRAPH_BASE    = "https://graph.microsoft.com/v1.0";
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 async function handleSignIn() {
