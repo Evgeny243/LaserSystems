@@ -425,6 +425,9 @@ var msalInstance = null;
 
 window.addEventListener('load', function() {
   try {
+    console.log('window loaded');
+    console.log('msal object:', typeof msal);
+    console.log('msal.PublicClientApplication:', typeof msal?.PublicClientApplication);
     msalInstance = new msal.PublicClientApplication({
       auth: {
         clientId:    CONFIG.clientId,
