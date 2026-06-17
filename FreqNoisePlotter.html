@@ -343,15 +343,15 @@ main {
 <script>
 const CONFIG = {
   // Azure AD App Registration values
-  clientId:   "6d33bfdc-3b78-4d28-a460-ca8cac920723",        // Application (client) ID
-  tenantId:   "ce9b7b50-4043-45e5-9841-b0386610857a",        // Directory (tenant) ID
+  clientId:   "YOUR_CLIENT_ID",        // Application (client) ID
+  tenantId:   "YOUR_TENANT_ID",        // Directory (tenant) ID
 
   // SharePoint site URL — e.g. "https://contoso.sharepoint.com/sites/QuantumLab"
-  siteUrl:    "https://queracomputing.sharepoint.com/sites/QuEraComputing",
+  siteUrl:    "https://YOUR_ORG.sharepoint.com/sites/YOUR_SITE",
 
   // Default folder path (server-relative) — user can override in the UI
   // e.g. "/sites/QuantumLab/Shared Documents/ExperimentData"
-  folderPath: "/sites/QuEraComputing/Shared Documents/Hardware documentation/Laser Referencing and Locking/PhaseNoise_library",
+  folderPath: "/sites/YOUR_SITE/Shared Documents/YOUR_FOLDER",
 };
 </script>
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
@@ -506,22 +506,31 @@ async function loadFileList() {
     const siteData  = await graphGet(`${GRAPH_BASE}/sites/${hostname}:/${sitePath}`);
     const siteId    = siteData.id;
 
-    // Get default document library drive
+    // Get the "Shared Documents" drive — internally named "Documents" in Graph API
     const drivesData = await graphGet(`${GRAPH_BASE}/sites/${siteId}/drives`);
-    const drive      = drivesData.value.find(d => d.driveType === 'documentLibrary') || drivesData.value[0];
-    const driveId    = drive.id;
+    const drive = drivesData.value.find(d =>
+      d.webUrl && d.webUrl.toLowerCase().includes('/shared%20documents')
+    ) || drivesData.value.find(d => d.name === 'Documents')
+      || drivesData.value.find(d => d.driveType === 'documentLibrary');
+    const driveId = drive.id;
 
     // Strip site-relative prefix to get path relative to drive root
     // e.g. "/sites/QuEraComputing/Shared Documents/MyFolder" -> "/MyFolder"
     const siteName    = new URL(CONFIG.siteUrl).pathname;
-    const drivePrefix = siteName + '/Shared Documents';
-    let drivePath     = folderPath;
-    if (drivePath.toLowerCase().startsWith(drivePrefix.toLowerCase())) {
-      drivePath = drivePath.slice(drivePrefix.length) || '/';
+    // Try both "Shared Documents" and "Documents" prefix variants
+    const drivePrefixes = [
+      siteName + '/Shared Documents',
+      siteName + '/Documents',
+    ];
+    let drivePath = folderPath;
+    for (const prefix of drivePrefixes) {
+      if (drivePath.toLowerCase().startsWith(prefix.toLowerCase())) {
+        drivePath = drivePath.slice(prefix.length) || '/';
+        break;
+      }
     }
     console.log('folderPath input:', folderPath);
     console.log('siteName:', siteName);
-    console.log('drivePrefix:', drivePrefix);
     console.log('drivePath after strip:', drivePath);
     const listUrl = (drivePath && drivePath !== '/')
       ? `${GRAPH_BASE}/drives/${driveId}/root:${encodeURI(drivePath)}:/children`
