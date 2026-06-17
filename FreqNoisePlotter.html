@@ -1,3 +1,4 @@
+// FreqNoisePlotter V2: 1. checks/unchecks files to plot live, 2. browse subfolders
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -200,17 +201,58 @@ aside {
 #file-list::-webkit-scrollbar-track { background: transparent; }
 #file-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+.empty-state {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--text-dimmer);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* ── Tree view ──────────────────────────────────────────────────────────── */
+.tree-node { user-select: none; }
+
+.tree-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  transition: background .1s;
+}
+.tree-folder:hover { background: var(--bg3); }
+.tree-folder .arrow {
+  font-size: 9px;
+  transition: transform .15s;
+  color: var(--text-dimmer);
+  flex-shrink: 0;
+}
+.tree-folder.open .arrow { transform: rotate(90deg); }
+.tree-folder .folder-icon { flex-shrink: 0; }
+
+.tree-children {
+  display: none;
+  border-left: 1px solid var(--border);
+  margin-left: 20px;
+}
+.tree-children.open { display: block; }
+
 .file-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 6px 14px;
+  padding: 5px 14px;
   cursor: pointer;
   border-left: 2px solid transparent;
   transition: background .1s, border-color .1s;
 }
 .file-item:hover { background: var(--bg3); }
-.file-item.checked { border-left-color: var(--accent); background: rgba(68,147,248,0.06); }
+.file-item.checked { border-left-color: var(--accent); background: rgba(26,86,160,0.06); }
+.file-item.loading { opacity: 0.6; pointer-events: none; }
 
 .file-item input[type=checkbox] {
   margin-top: 2px;
@@ -231,16 +273,6 @@ aside {
   color: var(--text-dimmer);
   margin-top: 1px;
 }
-
-.empty-state {
-  padding: 32px 20px;
-  text-align: center;
-  color: var(--text-dimmer);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-/* ── Plot area ──────────────────────────────────────────────────────────── */
 main {
   flex: 1;
   display: flex;
@@ -386,11 +418,11 @@ const CONFIG = {
   <!-- Plot panel -->
   <main>
     <div class="plot-toolbar">
-      <button class="plot-btn primary" id="btn-plot" onclick="plotSelected()" disabled>
-        Plot selected
-      </button>
       <button class="plot-btn secondary" id="btn-download" onclick="downloadPNG()" disabled>
         ⬇ PNG
+      </button>
+      <button class="plot-btn" id="btn-clear-plot" onclick="clearPlot()" style="background:var(--bg3);color:var(--text-dim);border:1px solid var(--border)">
+        Clear plot
       </button>
       <div class="toolbar-sep"></div>
       <span class="toolbar-label">Title:</span>
@@ -412,10 +444,19 @@ var GRAPH_SCOPES = ["Files.Read.All", "Sites.Read.All"];
 var GRAPH_BASE   = "https://graph.microsoft.com/v1.0";
 
 var currentAccount = null;
-var filesMeta      = [];
-var traces         = [];
+var driveId        = null;   // cached after first load
+var siteId         = null;
 
-// ── MSAL — constructed on window load so CDN script is guaranteed ready ──
+// traceMap: filename → {x, y, color} for currently plotted traces
+var traceMap = {};
+var colorIdx = 0;
+var COLORS = [
+  '#1a56a0','#c0392b','#27ae60','#8e44ad',
+  '#d35400','#16a085','#c0392b','#2980b9',
+  '#f39c12','#1abc9c','#e74c3c','#9b59b6',
+];
+
+// ── MSAL ──────────────────────────────────────────────────────────────────
 var msalInstance = null;
 
 window.addEventListener('load', function() {
@@ -438,10 +479,9 @@ window.addEventListener('load', function() {
   }
 });
 
-
 // ── Auth ──────────────────────────────────────────────────────────────────
 async function handleSignIn() {
-  if (!msalInstance) { showToast('App still initializing — please wait a moment and try again.', true); return; }
+  if (!msalInstance) { showToast('App still initializing — please wait a moment.', true); return; }
   try {
     const resp = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
     currentAccount = resp.account;
@@ -450,7 +490,7 @@ async function handleSignIn() {
     document.getElementById('btn-signin').classList.add('signed-in');
     document.getElementById('btn-signin').onclick = handleSignOut;
     document.getElementById('folder-path-input').value = CONFIG.folderPath;
-    loadFileList();
+    loadFileTree();
   } catch(e) {
     if (!e.message?.includes('user_cancelled')) showToast('Sign-in failed: ' + e.message, true);
   }
@@ -459,6 +499,7 @@ async function handleSignIn() {
 function handleSignOut() {
   msalInstance.logoutPopup({ account: currentAccount });
   currentAccount = null;
+  driveId = null; siteId = null;
   document.getElementById('btn-signin').textContent = 'Sign in with Microsoft';
   document.getElementById('btn-signin').classList.remove('signed-in');
   document.getElementById('btn-signin').onclick = handleSignIn;
@@ -470,11 +511,9 @@ function handleSignOut() {
 async function getToken() {
   const req = { scopes: GRAPH_SCOPES, account: currentAccount };
   try {
-    const r = await msalInstance.acquireTokenSilent(req);
-    return r.accessToken;
+    return (await msalInstance.acquireTokenSilent(req)).accessToken;
   } catch {
-    const r = await msalInstance.acquireTokenPopup(req);
-    return r.accessToken;
+    return (await msalInstance.acquireTokenPopup(req)).accessToken;
   }
 }
 
@@ -485,226 +524,201 @@ async function graphGet(url) {
   return r.json();
 }
 
-// ── SharePoint file listing ───────────────────────────────────────────────
-async function loadFileList() {
-  if (!currentAccount) { showToast('Please sign in first.', true); return; }
+// ── Drive resolution (cached) ─────────────────────────────────────────────
+async function ensureDrive() {
+  if (driveId) return;
+  const hostname = new URL(CONFIG.siteUrl).hostname;
+  const sitePath = new URL(CONFIG.siteUrl).pathname.replace(/^\//, '');
+  const siteData = await graphGet(`${GRAPH_BASE}/sites/${hostname}:/${sitePath}`);
+  siteId = siteData.id;
+  const drivesData = await graphGet(`${GRAPH_BASE}/sites/${siteId}/drives`);
+  const drive = drivesData.value.find(d =>
+    d.webUrl && d.webUrl.toLowerCase().includes('/shared%20documents')
+  ) || drivesData.value.find(d => d.name === 'Documents')
+    || drivesData.value.find(d => d.driveType === 'documentLibrary');
+  driveId = drive.id;
+}
 
-  const folderPath = document.getElementById('folder-path-input').value.trim() || CONFIG.folderPath;
-  setStatus('<span class="spinner"></span>Loading file list…');
-  document.getElementById('file-list').innerHTML =
-    '<div class="empty-state"><span class="spinner"></span>Fetching files…</div>';
+// Convert CONFIG folderPath → drive-relative path
+function toDrivePath(folderPath) {
+  const siteName = new URL(CONFIG.siteUrl).pathname;
+  const prefixes = [siteName + '/Shared Documents', siteName + '/Documents'];
+  for (const p of prefixes) {
+    if (folderPath.toLowerCase().startsWith(p.toLowerCase()))
+      return folderPath.slice(p.length) || '/';
+  }
+  return folderPath;
+}
 
-  try {
-    // Resolve site ID
-    const hostname  = new URL(CONFIG.siteUrl).hostname;
-    const sitePath  = new URL(CONFIG.siteUrl).pathname.replace(/^\//, '');
-    const siteData  = await graphGet(`${GRAPH_BASE}/sites/${hostname}:/${sitePath}`);
-    const siteId    = siteData.id;
-
-    // Get the "Shared Documents" drive — internally named "Documents" in Graph API
-    const drivesData = await graphGet(`${GRAPH_BASE}/sites/${siteId}/drives`);
-    const drive = drivesData.value.find(d =>
-      d.webUrl && d.webUrl.toLowerCase().includes('/shared%20documents')
-    ) || drivesData.value.find(d => d.name === 'Documents')
-      || drivesData.value.find(d => d.driveType === 'documentLibrary');
-    const driveId = drive.id;
-
-    // Strip site-relative prefix to get path relative to drive root
-    // e.g. "/sites/QuEraComputing/Shared Documents/MyFolder" -> "/MyFolder"
-    const siteName    = new URL(CONFIG.siteUrl).pathname;
-    // Try both "Shared Documents" and "Documents" prefix variants
-    const drivePrefixes = [
-      siteName + '/Shared Documents',
-      siteName + '/Documents',
-    ];
-    let drivePath = folderPath;
-    for (const prefix of drivePrefixes) {
-      if (drivePath.toLowerCase().startsWith(prefix.toLowerCase())) {
-        drivePath = drivePath.slice(prefix.length) || '/';
-        break;
-      }
-    }
-    console.log('folderPath input:', folderPath);
-    console.log('siteName:', siteName);
-    console.log('drivePath after strip:', drivePath);
-    const listUrl = (drivePath && drivePath !== '/')
-      ? `${GRAPH_BASE}/drives/${driveId}/root:${encodeURI(drivePath)}:/children`
-      : `${GRAPH_BASE}/drives/${driveId}/root/children`;
-    console.log('listUrl:', listUrl);
-
-    const listData = await graphGet(listUrl);
-
-    filesMeta = listData.value
-      .filter(item => item.file && !item.name.includes('.'))  // files only, no extension
-      .map(item => ({
-        name:        item.name,
+// Fetch children of a drive path, returns {folders, files}
+async function fetchChildren(drivePath) {
+  await ensureDrive();
+  const url = (drivePath && drivePath !== '/')
+    ? `${GRAPH_BASE}/drives/${driveId}/root:${encodeURI(drivePath)}:/children`
+    : `${GRAPH_BASE}/drives/${driveId}/root/children`;
+  const data = await graphGet(url);
+  const folders = [], files = [];
+  for (const item of data.value) {
+    if (item.folder) {
+      folders.push({ name: item.name, path: drivePath.replace(/\/$/, '') + '/' + item.name });
+    } else if (item.file && !item.name.includes('.')) {
+      files.push({
+        name: item.name,
         downloadUrl: item['@microsoft.graph.downloadUrl'],
-        size:        item.size,
-        modified:    item.lastModifiedDateTime?.slice(0, 10) ?? '',
-      }));
+        size: item.size,
+        modified: item.lastModifiedDateTime?.slice(0, 10) ?? '',
+        path: drivePath.replace(/\/$/, '') + '/' + item.name,
+      });
+    }
+  }
+  folders.sort((a, b) => a.name.localeCompare(b.name));
+  files.sort((a, b) => a.name.localeCompare(b.name));
+  return { folders, files };
+}
 
-    renderFileList();
-    setStatus(`${filesMeta.length} file(s) in folder`);
+// ── Tree rendering ────────────────────────────────────────────────────────
+async function loadFileTree() {
+  if (!currentAccount) { showToast('Please sign in first.', true); return; }
+  const rootPath = toDrivePath(
+    document.getElementById('folder-path-input').value.trim() || CONFIG.folderPath
+  );
+  setStatus('<span class="spinner"></span>Loading…');
+  const el = document.getElementById('file-list');
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span>Fetching…</div>';
+  try {
+    const container = document.createElement('div');
+    await renderTreeNode(container, rootPath, 0);
+    el.innerHTML = '';
+    el.appendChild(container);
+    const count = el.querySelectorAll('.file-item').length;
+    setStatus(`Loaded — ${count} file(s) found`);
   } catch(e) {
     setStatus('Error loading files');
-    showToast('Failed to load file list: ' + e.message, true);
-    document.getElementById('file-list').innerHTML =
-      `<div class="empty-state" style="color:#f85149">Error: ${e.message}</div>`;
+    showToast('Failed: ' + e.message, true);
+    el.innerHTML = `<div class="empty-state" style="color:#c0392b">Error: ${e.message}</div>`;
   }
 }
 
-function renderFileList() {
-  const el = document.getElementById('file-list');
-  if (!filesMeta.length) {
-    el.innerHTML = '<div class="empty-state">No files found in this folder.</div>';
-    return;
-  }
-  el.innerHTML = filesMeta.map((f, i) => `
-    <div class="file-item" id="fi-${i}" onclick="toggleFile(${i})">
-      <input type="checkbox" id="cb-${i}" onchange="onCheck(${i})" onclick="event.stopPropagation()"/>
+async function renderTreeNode(container, drivePath, depth) {
+  const { folders, files } = await fetchChildren(drivePath);
+
+  // Render files at this level
+  for (const f of files) {
+    const item = document.createElement('div');
+    item.className = 'file-item tree-node';
+    item.style.paddingLeft = (14 + depth * 0) + 'px';
+    item.dataset.path = f.path;
+    item.dataset.downloadUrl = f.downloadUrl;
+    item.dataset.name = f.name;
+    const isPlotted = !!traceMap[f.path];
+    if (isPlotted) item.classList.add('checked');
+    item.innerHTML = `
+      <input type="checkbox" ${isPlotted ? 'checked' : ''} onclick="event.stopPropagation()"/>
       <div>
         <div class="file-name">${f.name}</div>
         <div class="file-meta">${formatBytes(f.size)} · ${f.modified}</div>
-      </div>
-    </div>`).join('');
-}
-
-function toggleFile(i) {
-  const cb = document.getElementById(`cb-${i}`);
-  cb.checked = !cb.checked;
-  onCheck(i);
-}
-function onCheck(i) {
-  document.getElementById(`fi-${i}`).classList.toggle('checked',
-    document.getElementById(`cb-${i}`).checked);
-  updatePlotBtn();
-}
-function selectAll() {
-  filesMeta.forEach((_, i) => {
-    document.getElementById(`cb-${i}`).checked = true;
-    document.getElementById(`fi-${i}`).classList.add('checked');
-  });
-  updatePlotBtn();
-}
-function clearAll() {
-  filesMeta.forEach((_, i) => {
-    document.getElementById(`cb-${i}`).checked = false;
-    document.getElementById(`fi-${i}`).classList.remove('checked');
-  });
-  updatePlotBtn();
-}
-function updatePlotBtn() {
-  const any = filesMeta.some((_, i) => document.getElementById(`cb-${i}`)?.checked);
-  document.getElementById('btn-plot').disabled = !any;
-}
-
-// ── File parsing ──────────────────────────────────────────────────────────
-function parseFile(text, filename) {
-  // Split into non-empty lines
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-
-  // Find the header line: first line whose first token is not a pure number
-  // and that has ≥ 2 tab-separated fields
-  let dataStart = 0;
-  let colFreq   = 0;
-  let colFN     = 3;   // default: col 4 (0-indexed = 3) = Hz²/Hz
-
-  for (let i = 0; i < Math.min(lines.length, 30); i++) {
-    const parts = lines[i].split('\t');
-    if (parts.length >= 4 && isNaN(parseFloat(parts[0]))) {
-      // This looks like a header row — map column names
-      const headers = parts.map(h => h.trim().toLowerCase());
-      const fIdx = headers.findIndex(h => h.includes('frequency') && !h.includes('noise'));
-      const nIdx = headers.findIndex(h => h.includes('hz^2') || h.includes('hz²') || h.includes('hz2/hz'));
-      if (fIdx >= 0) colFreq = fIdx;
-      if (nIdx >= 0) colFN   = nIdx;
-      dataStart = i + 1;
-      break;
-    }
-    // If line parses as numbers it IS a data line — no header found yet
-    if (parts.length >= 4 && !isNaN(parseFloat(parts[0]))) {
-      dataStart = i;
-      break;
-    }
+      </div>`;
+    item.addEventListener('click', () => onFileToggle(item, f));
+    item.querySelector('input').addEventListener('change', () => onFileToggle(item, f));
+    container.appendChild(item);
   }
 
-  const xVals = [], yVals = [];
-  for (let i = dataStart; i < lines.length; i++) {
-    const parts = lines[i].split('\t');
-    if (parts.length <= Math.max(colFreq, colFN)) continue;
-    const x = parseFloat(parts[colFreq]);
-    const y = parseFloat(parts[colFN]);
-    if (isFinite(x) && isFinite(y) && x > 0 && y > 0) {
-      xVals.push(x);
-      yVals.push(y);
-    }
+  // Render subfolders
+  for (const folder of folders) {
+    const folderEl = document.createElement('div');
+    folderEl.className = 'tree-node';
+
+    const header = document.createElement('div');
+    header.className = 'tree-folder';
+    header.innerHTML = `<span class="arrow">▶</span><span class="folder-icon">📁</span><span>${folder.name}</span>`;
+    folderEl.appendChild(header);
+
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+    children.style.marginLeft = (14 + depth * 4) + 'px';
+    folderEl.appendChild(children);
+
+    let loaded = false;
+    header.addEventListener('click', async () => {
+      const isOpen = header.classList.toggle('open');
+      children.classList.toggle('open', isOpen);
+      if (isOpen && !loaded) {
+        loaded = true;
+        children.innerHTML = '<div class="empty-state" style="padding:8px 14px"><span class="spinner"></span></div>';
+        try {
+          await renderTreeNode(children, folder.path, depth + 1);
+        } catch(e) {
+          children.innerHTML = `<div class="empty-state" style="color:#c0392b;padding:6px 14px">Error: ${e.message}</div>`;
+        }
+      }
+    });
+
+    container.appendChild(folderEl);
   }
-  if (!xVals.length) throw new Error(`No valid X/Y data found in ${filename}`);
-  return { x: xVals, y: yVals };
 }
 
-// ── Plotting ──────────────────────────────────────────────────────────────
-const COLORS = [
-  '#4493f8','#f78166','#3fb950','#d2a8ff',
-  '#ffa657','#79c0ff','#ff7b72','#56d364',
-];
+// ── Live toggle ───────────────────────────────────────────────────────────
+async function onFileToggle(item, f) {
+  const cb = item.querySelector('input[type=checkbox]');
+  const shouldAdd = !traceMap[f.path];
+  cb.checked = shouldAdd;
+  item.classList.toggle('checked', shouldAdd);
 
-async function plotSelected() {
-  const selected = filesMeta
-    .map((f, i) => ({ ...f, i }))
-    .filter(f => document.getElementById(`cb-${f.i}`)?.checked);
-
-  if (!selected.length) return;
-
-  const btn = document.getElementById('btn-plot');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Loading…';
-  setStatus(`<span class="spinner"></span>Fetching ${selected.length} file(s)…`);
-
-  traces = [];
-  const errors = [];
-
-  await Promise.all(selected.map(async (f, idx) => {
+  if (shouldAdd) {
+    item.classList.add('loading');
     try {
       const resp = await fetch(f.downloadUrl);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const text = await resp.text();
       const { x, y } = parseFile(text, f.name);
-      traces[idx] = {
-        x, y,
-        type: 'scatter',
-        mode: 'lines',
-        name: f.name,
-        line: { color: COLORS[idx % COLORS.length], width: 1.2 },
-        hovertemplate: '<b>%{fullData.name}</b><br>f = %{x:.3g} Hz<br>S = %{y:.3g} Hz²/Hz<extra></extra>',
-      };
+      const color = COLORS[colorIdx % COLORS.length];
+      colorIdx++;
+      traceMap[f.path] = { x, y, name: f.name, color };
     } catch(e) {
-      errors.push(`${f.name}: ${e.message}`);
+      showToast(`Failed to load ${f.name}: ${e.message}`, true);
+      cb.checked = false;
+      item.classList.remove('checked');
     }
-  }));
-
-  traces = traces.filter(Boolean);
-
-  if (!traces.length) {
-    showToast('No data could be loaded. ' + errors.join(' | '), true);
-    btn.disabled = false;
-    btn.textContent = 'Plot selected';
-    setStatus('Error — no data plotted');
-    return;
+    item.classList.remove('loading');
+  } else {
+    delete traceMap[f.path];
   }
+  updatePlot();
+}
 
-  const title = document.getElementById('plot-title-input').value.trim() || 'Phase Noise (by OEwaves Linewidth Analyzer)';
-  const showLegend = traces.length > 1;
+function selectAll() {
+  // Select all visible files
+  document.querySelectorAll('.file-item').forEach(item => {
+    if (!traceMap[item.dataset.path]) {
+      const f = { path: item.dataset.path, downloadUrl: item.dataset.downloadUrl, name: item.dataset.name };
+      onFileToggle(item, f);
+    }
+  });
+}
 
-  const layout = {
+function clearAll() {
+  document.querySelectorAll('.file-item').forEach(item => {
+    const cb = item.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = false;
+    item.classList.remove('checked');
+  });
+  traceMap = {};
+  colorIdx = 0;
+  updatePlot();
+}
+
+// ── Plot update ───────────────────────────────────────────────────────────
+function getLayout(showLegend) {
+  const title = document.getElementById('plot-title-input').value.trim()
+    || 'Phase Noise (by OEwaves Linewidth Analyzer)';
+  return {
     paper_bgcolor: '#ffffff',
     plot_bgcolor:  '#ffffff',
     font:  { family: "'JetBrains Mono', monospace", color: '#222222', size: 11 },
     title: {
       text: title,
       font: { family: "'Syne', sans-serif", size: 15, color: '#111111' },
-      x: 0.5, xanchor: 'center',
-      pad: { t: 6 },
+      x: 0.5, xanchor: 'center', pad: { t: 6 },
     },
     xaxis: {
       title: { text: 'Frequency offset (Hz)', standoff: 8 },
@@ -714,9 +728,7 @@ async function plotSelected() {
       ticktext: ['1 Hz','10 Hz','100 Hz','1 kHz','10 kHz','100 kHz','1 MHz','10 MHz','100 MHz'],
       showgrid: true, gridcolor: '#cccccc', gridwidth: 0.8,
       minor: { showgrid: true, gridcolor: '#e8e8e8', gridwidth: 0.4, ticks: 'inside' },
-      ticks: 'inside', tickcolor: '#888888',
-      linecolor: '#aaaaaa', mirror: true,
-      zeroline: false,
+      ticks: 'inside', tickcolor: '#888888', linecolor: '#aaaaaa', mirror: true, zeroline: false,
     },
     yaxis: {
       title: { text: 'Frequency Noise (Hz²/Hz)', standoff: 8 },
@@ -726,96 +738,118 @@ async function plotSelected() {
       ticktext: ['10⁻¹','10⁰','10¹','10²','10³','10⁴','10⁵','10⁶','10⁷','10⁸','10⁹','10¹⁰','10¹¹'],
       showgrid: true, gridcolor: '#cccccc', gridwidth: 0.8,
       minor: { showgrid: true, gridcolor: '#e8e8e8', gridwidth: 0.4, ticks: 'inside' },
-      ticks: 'inside', tickcolor: '#888888',
-      linecolor: '#aaaaaa', mirror: true,
-      zeroline: false,
+      ticks: 'inside', tickcolor: '#888888', linecolor: '#aaaaaa', mirror: true, zeroline: false,
     },
-    // Threshold line at 100 Hz²/Hz
     shapes: [{
-      type: 'line',
-      xref: 'paper', x0: 0, x1: 1,
-      yref: 'y',     y0: 100, y1: 100,
+      type: 'line', xref: 'paper', x0: 0, x1: 1,
+      yref: 'y', y0: 100, y1: 100,
       line: { color: '#cc0000', width: 2.5, dash: 'solid' },
     }],
     annotations: [{
-      xref: 'paper', x: 1.01,
-      yref: 'y',     y: 100,
-      text: '100 Hz²/Hz',
-      showarrow: false,
+      xref: 'paper', x: 1.01, yref: 'y', y: 100,
+      text: '100 Hz²/Hz', showarrow: false,
       font: { size: 10, color: '#cc0000' },
       xanchor: 'left', yanchor: 'middle',
     }],
     legend: showLegend ? {
-      bgcolor: 'rgba(255,255,255,0.9)',
-      bordercolor: '#cccccc',
-      borderwidth: 1,
+      bgcolor: 'rgba(255,255,255,0.9)', bordercolor: '#cccccc', borderwidth: 1,
       font: { size: 10, color: '#222222' },
-      x: 1, xanchor: 'right',
-      y: 1, yanchor: 'top',
+      x: 1, xanchor: 'right', y: 1, yanchor: 'top',
     } : { visible: false },
     showlegend: showLegend,
     margin: { l: 72, r: 100, t: 52, b: 60 },
     hovermode: 'x unified',
     hoverlabel: {
-      bgcolor: '#f5f5f5',
-      bordercolor: '#cccccc',
+      bgcolor: '#f5f5f5', bordercolor: '#cccccc',
       font: { family: "'JetBrains Mono', monospace", size: 11, color: '#222222' },
     },
   };
+}
 
-  const config = {
-    responsive: true,
-    displayModeBar: true,
+function updatePlot() {
+  const traceList = Object.values(traceMap).map(t => ({
+    x: t.x, y: t.y,
+    type: 'scatter', mode: 'lines',
+    name: t.name,
+    line: { color: t.color, width: 1.2 },
+    hovertemplate: '<b>%{fullData.name}</b><br>f = %{x:.3g} Hz<br>S = %{y:.3g} Hz²/Hz<extra></extra>',
+  }));
+
+  const plotConfig = {
+    responsive: true, displayModeBar: true,
     modeBarButtonsToRemove: ['select2d','lasso2d'],
     displaylogo: false,
     toImageButtonOptions: { format: 'png', width: 1400, height: 800, scale: 2 },
   };
 
-  Plotly.react('plot-div', traces, layout, config);
+  Plotly.react('plot-div', traceList, getLayout(traceList.length > 1), plotConfig);
+  document.getElementById('btn-download').disabled = traceList.length === 0;
+  setStatus(traceList.length > 0 ? `${traceList.length} trace(s) plotted` : 'Signed in — browse files to plot');
+}
 
-  document.getElementById('btn-download').disabled = false;
-  btn.disabled = false;
-  btn.textContent = 'Plot selected';
+function clearPlot() {
+  clearAll();
+}
 
-  const msg = `Plotted ${traces.length} trace(s)` + (errors.length ? ` · ${errors.length} error(s)` : '');
-  setStatus(msg);
-  if (errors.length) showToast('Some files failed: ' + errors.join(' | '), true);
+// ── File parsing ──────────────────────────────────────────────────────────
+function parseFile(text, filename) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  let dataStart = 0, colFreq = 0, colFN = 3;
+
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    const parts = lines[i].split('\t');
+    if (parts.length >= 4 && isNaN(parseFloat(parts[0]))) {
+      const headers = parts.map(h => h.trim().toLowerCase());
+      const fIdx = headers.findIndex(h => h.includes('frequency') && !h.includes('noise'));
+      const nIdx = headers.findIndex(h => h.includes('hz^2') || h.includes('hz²') || h.includes('hz2/hz'));
+      if (fIdx >= 0) colFreq = fIdx;
+      if (nIdx >= 0) colFN   = nIdx;
+      dataStart = i + 1;
+      break;
+    }
+    if (parts.length >= 4 && !isNaN(parseFloat(parts[0]))) { dataStart = i; break; }
+  }
+
+  const xVals = [], yVals = [];
+  for (let i = dataStart; i < lines.length; i++) {
+    const parts = lines[i].split('\t');
+    if (parts.length <= Math.max(colFreq, colFN)) continue;
+    const x = parseFloat(parts[colFreq]);
+    const y = parseFloat(parts[colFN]);
+    if (isFinite(x) && isFinite(y) && x > 0 && y > 0) { xVals.push(x); yVals.push(y); }
+  }
+  if (!xVals.length) throw new Error(`No valid X/Y data found in ${filename}`);
+  return { x: xVals, y: yVals };
 }
 
 // ── PNG download ──────────────────────────────────────────────────────────
 async function downloadPNG() {
-  if (!traces.length) return;
-  const title    = document.getElementById('plot-title-input').value.trim() || 'frequency_noise';
-  const filename = title.replace(/\s+/g, '_') + '.png';
+  if (!Object.keys(traceMap).length) return;
+  const title = document.getElementById('plot-title-input').value.trim() || 'phase_noise';
   try {
     await Plotly.downloadImage('plot-div', {
-      format: 'png', width: 1400, height: 800, scale: 2, filename,
+      format: 'png', width: 1400, height: 800, scale: 2,
+      filename: title.replace(/\s+/g, '_'),
     });
-  } catch(e) {
-    showToast('Download failed: ' + e.message, true);
-  }
+  } catch(e) { showToast('Download failed: ' + e.message, true); }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────
-function setStatus(html) {
-  document.getElementById('status-bar').innerHTML = html;
-}
+function setStatus(html) { document.getElementById('status-bar').innerHTML = html; }
 function formatBytes(b) {
   if (!b) return '—';
-  if (b < 1024)       return b + ' B';
-  if (b < 1048576)    return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
   return (b/1048576).toFixed(1) + ' MB';
 }
-let toastTimer;
-function showToast(msg, isError = false) {
+var toastTimer;
+function showToast(msg, isError) {
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.className   = 'show' + (isError ? ' error' : '');
+  t.className = 'show' + (isError ? ' error' : '');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.className = '', 4000);
 }
-
-
 </script>
 </body>
 </html>
