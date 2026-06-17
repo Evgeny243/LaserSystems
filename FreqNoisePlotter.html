@@ -519,9 +519,14 @@ async function loadFileList() {
     if (drivePath.toLowerCase().startsWith(drivePrefix.toLowerCase())) {
       drivePath = drivePath.slice(drivePrefix.length) || '/';
     }
+    console.log('folderPath input:', folderPath);
+    console.log('siteName:', siteName);
+    console.log('drivePrefix:', drivePrefix);
+    console.log('drivePath after strip:', drivePath);
     const listUrl = (drivePath && drivePath !== '/')
       ? `${GRAPH_BASE}/drives/${driveId}/root:${encodeURI(drivePath)}:/children`
       : `${GRAPH_BASE}/drives/${driveId}/root/children`;
+    console.log('listUrl:', listUrl);
 
     const listData = await graphGet(listUrl);
 
